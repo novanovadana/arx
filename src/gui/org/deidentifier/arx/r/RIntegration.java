@@ -15,92 +15,100 @@
  * limitations under the License.
  */
 package org.deidentifier.arx.r;
+
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.Reader;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Java integration with R. 
+ * Java integration with R.
  * 
  * @author Fabian Prasser
+ * @author Dana Novanova
+ * @author Alisa Fedorenko
  */
 public class RIntegration {
 
-    /** Debug flag */
-    private static final boolean DEBUG   = false;
-    /** Newline */
-    private static final char[]  NEWLINE = System.getProperty("line.separator").toCharArray();
+	/** Debug flag */
+	private static final boolean DEBUG = false;
+	/** Newline */
+	private static final char[] NEWLINE = System.getProperty("line.separator").toCharArray();
 
-    /** Process */
-    private Process              process;
-    /** Listener */
-    private RListener            listener;
-    /** Buffer */
-    private final RBuffer        buffer;
+	/** Process */
+	private Process process;
+	/** Listener */
+	private RListener listener;
+	/** Buffer */
+	private final RBuffer buffer;
 
 	public static final char[] ENDSEQUENCE = "clear()".toCharArray();
 
 	/**
 	 * Creates a new instance
+	 * 
 	 * @param path
 	 * @param buffer
-	 * @throws IOException 
+	 * @throws IOException
 	 */
-	public RIntegration(final String path, 
-	                         final RBuffer buffer,
-	                         final RListener listener) throws IOException {
-	    
-	    // Check args
-	    if (path == null || buffer == null || listener == null) {
-	        throw new NullPointerException("Argument must not be null");
-	    }
-	    
-	    // Store
-	    this.listener = listener;
-	    this.buffer = buffer;
-	    
-	    // Create process
-	    ProcessBuilder builder = new ProcessBuilder(OS.getParameters(path))
-	                                 .redirectErrorStream(true); // Redirect stderr to stdout
-	    
-	    // Try
-        try {
-            
-            // Start
-            this.process = builder.start();
-            
-            // Attach process to buffer
-            Thread t = new Thread(new Runnable() {
-                @Override
-                public void run() {
+	public RIntegration(final String path, final RBuffer buffer, final RListener listener) throws IOException {
+
+		// Check args
+		if (path == null || buffer == null || listener == null) {
+			throw new NullPointerException("Argument must not be null");
+		}
+
+		// Store
+		this.listener = listener;
+		this.buffer = buffer;
+
+		// Create process
+		ProcessBuilder builder = new ProcessBuilder(OS.getParameters(path)).redirectErrorStream(true); // Redirect
+																										// stderr to
+																										// stdout
+
+		// Try
+		try {
+
+			// Start
+			this.process = builder.start();
+
+			// Attach process to buffer
+			Thread t = new Thread(new Runnable() {
+				@Override
+				public void run() {
 					try {
-                        Reader reader = new InputStreamReader(RIntegration.this.process.getInputStream());
-                        int character;
-                        while ((character = reader.read()) != -1) {
-                            buffer.append((char) character);
-							if ((char) character == ENDSEQUENCE[ENDSEQUENCE.length -1]) {
+						Reader reader = new InputStreamReader(RIntegration.this.process.getInputStream());
+						int character;
+						while ((character = reader.read()) != -1 && process != null) {
+
+							buffer.append((char) character);
+							if ((char) character == ENDSEQUENCE[ENDSEQUENCE.length - 1]) {
 								if (buffer.compareEnding(ENDSEQUENCE)) {
 									buffer.clearBuffer();
 								}
+
 							}
-                            listener.fireBufferUpdatedEvent();
-                        }
-                        shutdown();
-                    } catch (IOException e) {
-                        debug(e);
-                        shutdown();
-                    }
-                }
-            });
-            t.setDaemon(true);
-            t.start();
-            
-        } catch (IOException e) {
-            shutdown();
-            throw(e);
-        }
+
+							listener.fireBufferUpdatedEvent();
+
+						}
+						shutdown();
+					} catch (IOException e) {
+						debug(e);
+						shutdown();
+					}
+				}
+			});
+			t.setDaemon(true);
+			t.start();
+
+		} catch (IOException e) {
+			shutdown();
+			throw (e);
+		}
 	}
 
 	/**
@@ -109,49 +117,62 @@ public class RIntegration {
 	 * @param command
 	 */
 	public void execute(String command) {
-	    if (this.process == null) {
-	        return;
-	    }
-
-        try {
-            this.buffer.append(command.toCharArray());
-            this.buffer.append(NEWLINE);
-            BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(this.process.getOutputStream()));
-            writer.write(command);
-            writer.newLine();
-            writer.flush();
-        } catch (Exception e) {
-            debug(e);
-            shutdown();
-        }
+		if (this.process == null) {
+			return;
+		}
+		try {
+			this.buffer.append(command.toCharArray());
+			this.buffer.append(NEWLINE);
+			BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(this.process.getOutputStream()));
+			writer.write(command);
+			writer.newLine();
+			writer.flush();
+		} catch (Exception e) {
+			debug(e);
+			shutdown();
+		}
 	}
 
 	/**
-     * Returns whether R is alive
-     * @return
-     */
-    public boolean isAlive() {
-        return this.process != null;
-    }
+	 * Returns whether R is alive
+	 * 
+	 * @return
+	 */
+	public boolean isAlive() {
+		return this.process != null;
+	}
 
-    /**
+	/**
 	 * Closes R
 	 */
-    public void shutdown() {
-        if (this.process != null) {
-            RIntegration.this.process.destroyForcibly();
-            RIntegration.this.process = null;
-            listener.fireClosedEvent();
-        }
-    }
+	public void shutdown() {
+		if (this.process != null) {
+			RIntegration.this.process.destroyForcibly();
+			listener.fireClosedEvent();
+			// if the process not terminated after destroyForcibly()
+			if (process.isAlive()) {
+				boolean Rdestroyed = false;
+				try {
+					Rdestroyed = process.waitFor(10, TimeUnit.SECONDS);
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+				if (!Rdestroyed) {
+					throw new RuntimeException("failed to destroy the R-Process");
+				}
+			}
+			RIntegration.this.process = null;
+		}
+	}
 
-    /**
+	/**
 	 * Debug helper
+	 * 
 	 * @param exception
 	 */
 	private void debug(Exception exception) {
-        if (DEBUG) {
-            exception.printStackTrace();
-        }
-    }
+		if (DEBUG) {
+			exception.printStackTrace();
+		}
+	}
 }
